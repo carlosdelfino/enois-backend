@@ -70,6 +70,87 @@ Produces `target/rede-0.0.1-SNAPSHOT.jar`.
 
 All 24 integration tests must pass.
 
+## Pentest local e staging autorizado
+
+O helper foi movido para `scripts/tests/pentest.sh`. Execute somente contra ambiente
+próprio/autorizado, nunca produção. São necessários **Bash 4+, Python 3.11+ e curl**; nenhuma
+ferramenta é instalada automaticamente. O padrão é `http://localhost:8081`, alinhado a
+`server.port=8081`. Se a porta ou o prefixo mudar no ambiente, informe a URL-base:
+
+```bash
+scripts/tests/pentest.sh
+scripts/tests/pentest.sh http://127.0.0.1:8081
+```
+
+Por padrão, somente `localhost`, `127.0.0.1` e `::1` são autorizados. Para staging,
+defina `ENOIS_STAGING_HOSTS` no ambiente confiável do operador: hosts canônicos exatos
+separados por vírgula, sem esquema, porta ou curingas. Informe também a URL-base do
+host autorizado. Ter `staging` no nome não concede autorização. A lista não deve vir
+de entrada arbitrária de PR; o próprio script pode ser alterado por um PR, portanto
+aprovações e controle de saída de rede precisam existir fora dele.
+
+Antes de qualquer scanner, o helper consulta `${TARGET}/health` com `curl -fsS`,
+timeout de conexão de 5 segundos e total de 15 segundos. Apenas HTTP 2xx passa;
+redirecionamentos não são seguidos. Alvo inválido/não autorizado, curl ausente ou
+pré-check com falha encerram com código **2**, sem iniciar scanners. Esse teste
+comprova disponibilidade HTTP, não a identidade do serviço: confirme o ambiente
+antes de autorizar. Um gateway deve encaminhar `/health` sob o prefixo informado.
+
+O ZAP recebe uma cópia JSON local validada da especificação em
+`${TARGET}/api/openapi.json`, ou de `OPENAPI_URL` na mesma origem autorizada. São
+aceitos OpenAPI 3.0/3.1 e Swagger 2.0; referências externas, servidores fora da
+URL-base e callbacks/webhooks são recusados. O helper normaliza os servidores para
+o alvo validado antes de importar. Se Springdoc estiver desabilitado (padrão), a
+resposta não for uma especificação válida ou faltar ZAP API scan, a etapa será
+registrada como falha: os demais scanners continuam, mas a saída final será **1**.
+Um baseline não substitui o API scan. Habilite `SPRINGDOC_ENABLED=true` **no backend**
+apenas em dev/staging protegido por VPN/controle de acesso; definir a variável só
+no shell do helper não habilita o serviço remoto. O script não muda essa configuração.
+
+Scanners disponíveis são detectados via PATH. SQLMap exige opt-in
+`PENTEST_SQLMAP=1`; mesmo com risco baixo, scans ativos podem alterar dados ou causar
+carga. Use um ambiente descartável. Ferramentas podem descobrir links, seguir
+redirecionamentos ou resolver DNS novamente: a validação inicial não substitui
+isolamento de rede/egress nem protege sozinha contra DNS rebinding.
+
+Relatórios ficam na raiz do repositório em `reports/pentest/<data>_<id>/`, inclusive
+quando o helper é chamado a partir de outro diretório. Cada ferramenta mantém seu
+log; `SUMMARY.log` registra código real e resultado. Falhas/achados/alertas geram
+saída **1**; **0** significa que as etapas executadas terminaram sem sinalização,
+não que a aplicação está segura. Ferramentas opcionais ausentes deixam o resumo
+**INCOMPLETO** e são listadas em `MISSING.txt`.
+
+Gitleaks usa `--redact` para logs e JSON e carrega `.devin/gitleaks.toml`, que precisa
+acompanhar o helper no checkout. As regras padrão são preservadas; somente segmentos
+`node_modules`, `target`, `.git` e `reports` são excluídos. Fontes e `.env` continuam
+sob análise. `.gitleaksignore` ignora fingerprints de achados, não diretórios.
+Relatórios podem conter informações sensíveis de outros scanners: não publique nem
+versione a pasta `reports/` (já ignorada pelo Git).
+
+### Validação e critérios de aceitação do helper
+
+```bash
+bash -n scripts/tests/pentest.sh scripts/tests/pentest_test.sh
+bash scripts/tests/pentest_test.sh
+shellcheck scripts/tests/pentest.sh scripts/tests/pentest_test.sh
+```
+
+Os testes usam ferramentas de rede simuladas e um repositório temporário, sem
+chamadas externas. Se Gitleaks estiver instalado, validam também exclusões e redação
+em uma fixture sintética local; caso contrário, essa checagem é explicitamente
+marcada como não executada. Nenhum backend ativo é necessário para a suíte Bash.
+
+| Critério | Evidência automatizada |
+|---|---|
+| `PENTEST-01` | Sem argumento, usar porta 8081 e consultar `/health` antes dos scanners. |
+| `PENTEST-02` | Autorizar apenas loopback ou hosts exatos; validar também `OPENAPI_URL`. |
+| `PENTEST-03` | Dependência/HTTP indisponível impede todos os scanners. |
+| `PENTEST-04` | OpenAPI inválido, externo ou indisponível causa falha final sem impedir outras etapas. |
+| `PENTEST-05` | Gitleaks preserva regras, exclui artefatos e não grava a fixture em claro. |
+| `PENTEST-06` | Novo caminho resolve a raiz independentemente do diretório de invocação. |
+| `PENTEST-07` | Preservar códigos de ferramentas, sinalizar falhas/achados e continuar coleta. |
+| `PENTEST-08` | Exercitar ZAP local/Docker, SQLMap opt-in e ausência de API scanner. |
+
 ## Docker
 
 ```bash
